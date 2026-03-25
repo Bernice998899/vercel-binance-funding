@@ -21,4 +21,4 @@ module.exports = (req, res) => {
     res.status(502).json({ error: e.message });
   });
 };
-```
+

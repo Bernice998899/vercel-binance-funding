@@ -7,7 +7,7 @@ module.exports = (req, res) => {
 
   const symbol = req.query.symbol || 'BTCUSDT';
 
-  const url = `https://api.phemex.com/exchange/public/md/v2/kline/last?symbol=.${symbol}FR8H&resolution=28800&limit=6`;
+  const url = `https://api.phemex.com/exchange/public/md/v2/kline/last?symbol=${encodeURIComponent('.' + symbol + 'FR8H')}&resolution=28800&limit=6`;
 
   https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (r) => {
     let data = '';

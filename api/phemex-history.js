@@ -12,7 +12,7 @@ module.exports = (req, res) => {
   const apiKey    = process.env.PHEMEX_API_KEY;
   const apiSecret = process.env.PHEMEX_API_SECRET;
 
-  const path        = '/api-data/public/data/funding-rate-history';
+  const path = '/api-data/futures/funding-history';
   const queryString = `symbol=${symbol}&limit=${limit}`;
   const expiry      = Math.floor(Date.now() / 1000) + 60;
 

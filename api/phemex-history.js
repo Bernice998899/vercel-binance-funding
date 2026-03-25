@@ -20,21 +20,19 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
   const symbol = req.query.symbol || 'BTCUSDT';
-  const limit  = parseInt(req.query.limit) || 50;
-  const since  = Math.floor((Date.now() - 48 * 3600 * 1000) / 1000); // 48h ago in seconds
 
-  // Fetch 1H (3600), 4H (14400), 8H (28800) — cover all possible intervals
+  // Fetch all 3 intervals, return ALL rows — HTML will filter by 48h
   const [rows1h, rows4h, rows8h] = await Promise.all([
-    fetchKline(`.${symbol}FR1H`, 3600, 48),   // 1H × 48 = 2 days
-    fetchKline(`.${symbol}FR4H`, 14400, 12),  // 4H × 12 = 2 days
-    fetchKline(`.${symbol}FR8H`, 28800, 6),   // 8H × 6  = 2 days
+    fetchKline(`.${symbol}FR1H`, 3600, 48),
+    fetchKline(`.${symbol}FR4H`, 14400, 12),
+    fetchKline(`.${symbol}FR8H`, 28800, 6),
   ]);
 
-  // Merge all, deduplicate by timestamp, filter to last 48h
+  // Deduplicate by timestamp only
   const seen = new Set();
   const merged = [];
   for (const row of [...rows1h, ...rows4h, ...rows8h]) {
-    if (!seen.has(row[0]) && row[0] >= since) {
+    if (!seen.has(row[0])) {
       seen.add(row[0]);
       merged.push(row);
     }

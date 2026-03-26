@@ -16,20 +16,14 @@ module.exports = (req, res) => {
 
   const symbol = req.query.symbol || 'BTCUSDT';
 
-  // Try FR4H first — if it has data, this coin settles every 4H
-  getKline(`.${symbol}FR4H`, 14400, 50, rows4h => {
+  // Try 4H first (12 candles = 2 days exact)
+  getKline(`.${symbol}FR4H`, 14400, 12, rows4h => {
     if (rows4h.length > 0) {
       return res.status(200).json({ code:0, msg:'OK', data:{ rows:rows4h }, interval:14400 });
     }
-    // Try FR1H
-    getKline(`.${symbol}FR1H`, 3600, 50, rows1h => {
-      if (rows1h.length > 0) {
-        return res.status(200).json({ code:0, msg:'OK', data:{ rows:rows1h }, interval:3600 });
-      }
-      // Fallback FR8H
-      getKline(`.${symbol}FR8H`, 28800, 50, rows8h => {
-        return res.status(200).json({ code:0, msg:'OK', data:{ rows:rows8h }, interval:28800 });
-      });
+    // Fallback 8H (6 candles = 2 days)
+    getKline(`.${symbol}FR8H`, 28800, 6, rows8h => {
+      res.status(200).json({ code:0, msg:'OK', data:{ rows:rows8h }, interval:28800 });
     });
   });
 };

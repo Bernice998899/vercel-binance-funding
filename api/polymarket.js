@@ -1,14 +1,14 @@
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   try {
-    // Sort by newest first — daily temperature markets are freshly created
-    const url = `https://gamma-api.polymarket.com/markets?limit=500&active=true&closed=false&sort=startDate&order=DESC`;
+    const url = `https://gamma-api.polymarket.com/markets?limit=200&active=true&closed=false&sortBy=createdAt&order=DESC`;
     const r = await fetch(url);
     const data = await r.json();
-    const weather = data.filter(m =>
+    const weather = (Array.isArray(data) ? data : []).filter(m =>
       /highest temperature in/i.test(m.question || '')
     );
-    res.json(weather.length > 0 ? weather : data.slice(0, 5));
+    // Return weather matches, or first 3 for debug if empty
+    res.json({ found: weather.length, weather, debug: Array.isArray(data) ? data.slice(0,3) : data });
   } catch(e) {
     res.status(500).json({ error: e.message });
   }

@@ -1,17 +1,15 @@
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   try {
-    const today = new Date().toISOString().split('T')[0];
-    const url = `https://gamma-api.polymarket.com/events?limit=200&tag_slug=temperature&startDateMin=${today}`;
+    const url = `https://data-api.polymarket.com/positions?user=0x594edb9112f526fa6a80b8f858a6379c8a2c1c11&sizeThreshold=0&limit=500`;
     const r = await fetch(url);
     const data = await r.json();
-    const markets = [];
-    for (const e of (Array.isArray(data) ? data : [])) {
-      for (const m of (e.markets || [])) {
-        markets.push({ ...m, eventTitle: e.title, endDate: e.endDate || m.endDate });
-      }
-    }
-    res.json({ count: markets.length, markets: markets.slice(0, 20), raw_events: Array.isArray(data) ? data.slice(0,2) : data });
+    // Only active positions: curPrice between 0.01 and 0.99
+    const active = (Array.isArray(data) ? data : []).filter(m => {
+      const p = parseFloat(m.curPrice);
+      return p > 0.01 && p < 0.99;
+    });
+    res.json(active);
   } catch(e) {
     res.status(500).json({ error: e.message });
   }

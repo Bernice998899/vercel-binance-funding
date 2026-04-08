@@ -1,11 +1,10 @@
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   try {
-    const url = `https://gamma-api.polymarket.com/events?limit=200&active=true`;
+    const url = `https://data-api.polymarket.com/positions?user=0x594edb9112f526fa6a80b8f858a6379c8a2c1c11&sizeThreshold=0&limit=100`;
     const r = await fetch(url);
     const data = await r.json();
-    // Return raw so we can inspect structure
-    res.json(Array.isArray(data) ? data.slice(0, 5) : data);
+    res.json(data);
   } catch(e) {
     res.status(500).json({ error: e.message });
   }

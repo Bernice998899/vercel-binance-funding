@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weather Arb Radar v2</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #07070f; color: #e0e0e0; font-family: 'Courier New', monospace; padding: 16px; }
+
+h1 { color: #00ffcc; font-size: 20px; margin-bottom: 2px; letter-spacing: 1px; }
+.subtitle { color: #444; font-size: 11px; margin-bottom: 14px; }
+
+.status-bar {
+  display: flex; gap: 16px; margin-bottom: 16px;
+  font-size: 11px; color: #444; align-items: center; flex-wrap: wrap;
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: #00ff88;
+  display: inline-block; margin-right: 5px; animation: pulse 2s infinite; }
+.dot.red { background: #ff4466; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.countdown { color: #00ffcc; font-weight: bold; }
+
+/* Opportunity cards — full width */
+.opps-section { margin-bottom: 20px; }
+.opp-card {
+  background: #0f0f1a; border: 1px solid #1a1a2e; border-radius: 8px;
+  padding: 14px 16px; margin-bottom: 10px; display: flex;
+  justify-content: space-between; align-items: center; gap: 12px;
+}
+.opp-card.high { border-color: #00ff8844; background: #081a12; }
+.opp-card.med  { border-color: #ffaa0044; background: #1a1200; }
+.opp-left { flex: 1; }
+.opp-title { font-size: 13px; color: #fff; margin-bottom: 4px; }
+.opp-meta  { font-size: 11px; color: #555; line-height: 1.6; }
+.opp-right { text-align: right; min-width: 90px; }
+.opp-edge  { font-size: 22px; font-weight: bold; }
+.opp-edge.high { color: #00ff88; }
+.opp-edge.med  { color: #ffaa00; }
+.opp-signal { font-size: 11px; color: #555; margin-top: 2px; }
+.opp-action { font-size: 11px; padding: 3px 10px; border-radius: 4px;
+  border: 1px solid #00ffcc44; color: #00ffcc; cursor: pointer;
+  background: transparent; margin-top: 6px; font-family: monospace; }
+.opp-action:hover { background: #00ffcc11; }
+
+/* Two col layout for data panels */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media(max-width:700px){ .grid2 { grid-template-columns: 1fr; } }
+
+.panel { background: #0f0f1a; border: 1px solid #1a1a2e; border-radius: 8px; padding: 14px; }
+.panel-title {
+  color: #00ffcc; font-size: 12px; margin-bottom: 10px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.refresh-btn {
+  background: #0a1a1a; border: 1px solid #00ffcc33; color: #00ffcc88;
+  padding: 4px 10px; border-radius: 5px; cursor: pointer;
+  font-size: 11px; font-family: monospace;
+}
+.refresh-btn:hover { color: #00ffcc; border-color: #00ffcc88; }
+
+.station { border-bottom: 1px solid #131325; padding: 8px 0; display: flex; justify-content: space-between; align-items: center; }
+.station:last-child { border-bottom: none; }
+.stn-left { }
+.stn-name { color: #ccc; font-size: 12px; font-weight: bold; }
+.stn-meta { color: #444; font-size: 10px; margin-top: 1px; }
+.stn-forecast { color: #666; font-size: 10px; }
+.stn-temp { font-size: 18px; font-weight: bold; color: #00ffcc; }
+
+.market { border-bottom: 1px solid #131325; padding: 8px 0; }
+.market:last-child { border-bottom: none; }
+.mkt-q { color: #aaa; font-size: 11px; line-height: 1.4; }
+.mkt-row { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+.mkt-meta { color: #444; font-size: 10px; }
+.mkt-price { font-size: 15px; font-weight: bold; }
+
+.loading { color: #333; font-size: 11px; padding: 16px 0; text-align: center; }
+.error { color: #ff446688; font-size: 11px; padding: 8px 0; }
+.empty { color: #333; font-size: 12px; padding: 16px; text-align: center; }
+
+.section-header {
+  color: #555; font-size: 11px; margin-bottom: 10px;
+  text-transform: uppercase; letter-spacing: 1px;
+  display: flex; justify-content: space-between;
+}
+.alert-count { color: #00ff88; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>⛈ Weather Arb Radar</h1>
+<p class="subtitle">METAR × Open-Meteo Forecast × Polymarket · Auto-refresh every 30min</p>
+
+<div class="status-bar">
+  <span><span class="dot" id="metar-dot"></span>METAR</span>
+  <span><span class="dot" id="forecast-dot"></span>Forecast</span>
+  <span><span class="dot" id="market-dot"></span>Markets (ColdMath tracking)</span>
+  <span>·</span>
+  <span>Next refresh: <span class="countdown" id="countdown">30:00</span></span>
+  <span>·</span>
+  <span id="last-update" style="color:#333">—</span>
+</div>
+
+<!-- Opportunities -->
+<div class="opps-section">
+  <div class="section-header">
+    <span>🎯 High-Confidence Opportunities</span>
+    <span class="alert-count" id="opp-count">scanning...</span>
+  </div>
+  <div id="opps-container"><div class="loading">Loading...</div></div>
+</div>
+
+<!-- Data panels -->
+<div class="grid2">
+  <div class="panel">
+    <div class="panel-title">
+      🛫 Live METAR + Forecast
+      <button class="refresh-btn" onclick="fetchAll()">↻ Refresh</button>
+    </div>
+    <div id="metar-container"><div class="loading">Loading...</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">
+      📊 Active Temperature Markets
+      <span style="color:#444;font-size:10px" id="market-count">—</span>
+    </div>
+    <div id="markets-container"><div class="loading">Loading...</div></div>
+  </div>
+</div>
+
+<script>
+const VERCEL = 'https://vercel-binance-funding.vercel.app';
+
+// Cities: METAR station + Open-Meteo lat/lon
+const STATIONS = [
+  { id:'EGLL',  city:'London',       lat:51.48,  lon:-0.45  },
+  { id:'ZSPD',  city:'Shanghai',     lat:31.14,  lon:121.80 },
+  { id:'KORD',  city:'Chicago',      lat:41.98,  lon:-87.91 },
+  { id:'KDEN',  city:'Denver',       lat:39.86,  lon:-104.67},
+  { id:'RKSS',  city:'Seoul',        lat:37.56,  lon:126.79 },
+  { id:'LIML',  city:'Milan',        lat:45.45,  lon:9.28   },
+  { id:'EHAM',  city:'Amsterdam',    lat:52.31,  lon:4.76   },
+  { id:'KDFW',  city:'Dallas',       lat:32.90,  lon:-97.04 },
+  { id:'RJTT',  city:'Tokyo',        lat:35.55,  lon:139.78 },
+  { id:'KJFK',  city:'New York',     lat:40.63,  lon:-73.78 },
+  { id:'KLAX',  city:'Los Angeles',  lat:33.94,  lon:-118.41},
+  { id:'LFPG',  city:'Paris',        lat:49.01,  lon:2.55   },
+  { id:'LEMD',  city:'Madrid',       lat:40.47,  lon:-3.56  },
+  { id:'EDDB',  city:'Berlin',       lat:52.37,  lon:13.50  },
+  { id:'OMDB',  city:'Dubai',        lat:25.25,  lon:55.36  },
+  { id:'WMKK',  city:'Kuala Lumpur', lat:2.74,   lon:101.71 },
+  { id:'WSSS',  city:'Singapore',    lat:1.36,   lon:103.99 },
+  { id:'YSSY',  city:'Sydney',       lat:-33.95, lon:151.18 },
+  { id:'SCEL',  city:'Santiago',     lat:-33.39, lon:-70.79 },
+  { id:'KMIA',  city:'Miami',        lat:25.80,  lon:-80.28 },
+  { id:'KAUS',  city:'Austin',       lat:30.18,  lon:-97.68 },
+  { id:'EPWA',  city:'Warsaw',       lat:52.17,  lon:20.97  },
+  { id:'RKPK',  city:'Busan',        lat:35.18,  lon:128.94 },
+  { id:'MPTO',  city:'Panama City',  lat:9.07,   lon:-79.38 },
+  { id:'MMMX',  city:'Mexico City',  lat:19.43,  lon:-99.07 },
+  { id:'NZWN',  city:'Wellington',   lat:-41.33, lon:174.81 },
+  { id:'LTBA',  city:'Istanbul',     lat:40.98,  lon:28.82  },
+  { id:'ZBAA',  city:'Beijing',      lat:40.08,  lon:116.58 },
+  { id:'KATL',  city:'Atlanta',      lat:33.64,  lon:-84.43 },
+  { id:'SBGR',  city:'Buenos Aires', lat:-34.82, lon:-58.53 },
+];
+
+let metarData = {};    // city -> { tempC, tempF, time }
+let forecastData = {}; // city -> { maxC_today, maxC_tomorrow, maxC_d2 }
+let marketData = [];   // active temperature markets
+
+// ── METAR ──────────────────────────────────────────────
+async function fetchMETAR() {
+  document.getElementById('metar-dot').classList.add('red');
+  const ids = STATIONS.map(s => s.id).join(',');
+  try {
+    const res = await fetch(`${VERCEL}/api/metar?ids=${ids}&format=json`);
+    const data = await res.json();
+    metarData = {};
+    for (const obs of data) {
+      const st = STATIONS.find(s => s.id === (obs.icaoId || obs.stationId));
+      if (!st) continue;
+      const tempC = obs.temp;
+      const tempF = tempC != null ? +(tempC * 9/5 + 32).toFixed(1) : null;
+      metarData[st.city] = { tempC, tempF, time: obs.obsTime };
+    }
+    document.getElementById('metar-dot').classList.remove('red');
+    renderMetar();
+  } catch(e) {
+    document.getElementById('metar-container').innerHTML = `<div class="error">METAR failed: ${e.message}</div>`;
+  }
+}
+
+// ── FORECAST (Open-Meteo, free, no key) ──────────────
+async function fetchForecasts() {
+  document.getElementById('forecast-dot').classList.add('red');
+  // Batch: Open-Meteo supports multiple lat/lon in one call? No — we call per city but in parallel
+  const today = new Date().toISOString().split('T')[0];
+  
+  try {
+    await Promise.all(STATIONS.map(async st => {
+      try {
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${st.lat}&longitude=${st.lon}&daily=temperature_2m_max&forecast_days=4&timezone=auto`;
+        const r = await fetch(url);
+        const d = await r.json();
+        if (d.daily && d.daily.temperature_2m_max) {
+          const maxTemps = d.daily.temperature_2m_max;
+          forecastData[st.city] = {
+            maxC_today:    maxTemps[0],
+            maxC_tomorrow: maxTemps[1],
+            maxC_d2:       maxTemps[2],
+            maxC_d3:       maxTemps[3],
+          };
+        }
+      } catch(e) { /* skip individual city */ }
+    }));
+    document.getElementById('forecast-dot').classList.remove('red');
+    renderMetar(); // re-render with forecast
+  } catch(e) {}
+}
+
+// ── MARKETS ────────────────────────────────────────────
+async function fetchMarkets() {
+  document.getElementById('market-dot').classList.add('red');
+  try {
+    const res = await fetch(`${VERCEL}/api/polymarket`);
+    const all = await res.json();
+    const today = new Date().toISOString().split('T')[0];
+    marketData = (Array.isArray(all) ? all : []).filter(m => {
+      const title = m.title || '';
+      const end = m.endDate || '';
+      return /highest.temperature.in/i.test(title) && end >= today;
+    });
+    // Deduplicate by title
+    const seen = new Set();
+    marketData = marketData.filter(m => {
+      if (seen.has(m.title)) return false;
+      seen.add(m.title); return true;
+    });
+    document.getElementById('market-dot').classList.remove('red');
+    document.getElementById('market-count').textContent = `${marketData.length} markets`;
+    renderMarkets();
+  } catch(e) {
+    document.getElementById('markets-container').innerHTML = `<div class="error">Markets failed: ${e.message}</div>`;
+  }
+}
+
+// ── RENDER METAR + FORECAST ────────────────────────────
+function renderMetar() {
+  const el = document.getElementById('metar-container');
+  if (!Object.keys(metarData).length) return;
+  
+  let html = '';
+  for (const st of STATIONS) {
+    const obs = metarData[st.city];
+    if (!obs) continue;
+    const fc = forecastData[st.city];
+    const fcStr = fc ? `▲${fc.maxC_today?.toFixed(0)}° today · ▲${fc.maxC_tomorrow?.toFixed(0)}° tmr` : '';
+    html += `
+      <div class="station">
+        <div class="stn-left">
+          <div class="stn-name">${st.city}</div>
+          <div class="stn-forecast">${fcStr}</div>
+        </div>
+        <div class="stn-temp">${obs.tempC != null ? obs.tempC + '°C' : 'N/A'}</div>
+      </div>`;
+  }
+  el.innerHTML = html;
+  updateScanner();
+}
+
+// ── RENDER MARKETS ─────────────────────────────────────
+function renderMarkets() {
+  const el = document.getElementById('markets-container');
+  if (!marketData.length) { el.innerHTML = '<div class="empty">No active markets</div>'; return; }
+  
+  let html = '';
+  for (const m of marketData.slice(0, 30)) {
+    const p = m.curPrice != null ? parseFloat(m.curPrice) : null;
+    const pct = p != null ? (p * 100).toFixed(1) + '¢' : '—';
+    const col = p > 0.8 ? '#00ff88' : p > 0.4 ? '#ffaa00' : p < 0.1 ? '#ff4466' : '#aaa';
+    const end = m.endDate ? m.endDate.split('T')[0] : '';
+    html += `
+      <div class="market">
+        <div class="mkt-q">${m.title || ''}</div>
+        <div class="mkt-row">
+          <div class="mkt-meta">${m.outcome || ''} · ${end}</div>
+          <div class="mkt-price" style="color:${col}">${pct}</div>
+        </div>
+      </div>`;
+  }
+  el.innerHTML = html;
+  updateScanner();
+}
+
+// ── SCANNER ────────────────────────────────────────────
+function updateScanner() {
+  if (!Object.keys(metarData).length || !marketData.length) return;
+
+  const opps = [];
+
+  for (const market of marketData) {
+    const title = market.title || '';
+    const outcome = market.outcome || '';
+    const curPrice = market.curPrice != null ? parseFloat(market.curPrice) : null;
+    const endDate  = market.endDate ? market.endDate.split('T')[0] : '';
+    
+    // Figure out which day this market is for
+    const today = new Date().toISOString().split('T')[0];
+    const tomorrow = new Date(Date.now()+86400000).toISOString().split('T')[0];
+    const dayOffset = endDate === today ? 0 : endDate === tomorrow ? 1 : 2;
+
+    for (const st of STATIONS) {
+      if (!title.toLowerCase().includes(st.city.toLowerCase())) continue;
+      
+      const obs = metarData[st.city];
+      const fc  = forecastData[st.city];
+      if (!obs) continue;
+
+      // Use forecast max for future days, METAR current for today
+      const forecastMax = dayOffset === 0 ? (fc?.maxC_today ?? obs.tempC)
+                        : dayOffset === 1 ? (fc?.maxC_tomorrow ?? obs.tempC)
+                        : (fc?.maxC_d2 ?? obs.tempC);
+
+      // Parse target from title
+      const matchC = title.match(/be\s+(\d+(?:\.\d+)?)\s*°?C/i);
+      const matchF = title.match(/be\s+(\d+(?:\.\d+)?)\s*°?F/i);
+      const matchBF = title.match(/between\s+(\d+)-(\d+)\s*°?F/i);
+      const matchBC = title.match(/between\s+(\d+)-(\d+)\s*°?C/i);
+
+      let signal = '', edgeVal = null, actual = null, target = '', unit = '';
+
+      if (matchBF || matchBC) {
+        const isF = !!matchBF;
+        const lo = parseFloat(isF ? matchBF[1] : matchBC[1]);
+        const hi = parseFloat(isF ? matchBF[2] : matchBC[2]);
+        actual = isF ? +(forecastMax * 9/5 + 32).toFixed(1) : forecastMax;
+        unit = isF ? '°F' : '°C';
+        target = `${lo}-${hi}${unit}`;
+        if (actual < lo - 4 || actual > hi + 4) { signal = '🔴 NO (outside range)'; edgeVal = curPrice; }
+        else if (actual >= lo && actual <= hi)   { signal = '🟢 YES (in range)';      edgeVal = curPrice ? 1-curPrice : null; }
+      } else if (matchC || matchF) {
+        const isF = !!matchF;
+        const targetTemp = parseFloat(isF ? matchF[1] : matchC[1]);
+        actual = isF ? +(forecastMax * 9/5 + 32).toFixed(1) : forecastMax;
+        unit = isF ? '°F' : '°C';
+        target = `${targetTemp}${unit}`;
+        const isHigher = /or higher/i.test(title);
+        const isBelow  = /or below/i.test(title);
+        const isExact  = !isHigher && !isBelow;
+        const diff = actual - targetTemp;
+
+        if (isHigher) {
+          if (diff >= 0)  { signal = '🟢 YES likely'; edgeVal = curPrice ? 1-curPrice : null; }
+          if (diff < -4)  { signal = '🔴 NO likely';  edgeVal = curPrice; }
+        }
+        if (isBelow) {
+          if (diff <= 0)  { signal = '🟢 YES likely'; edgeVal = curPrice ? 1-curPrice : null; }
+          if (diff > 4)   { signal = '🔴 NO likely';  edgeVal = curPrice; }
+        }
+        if (isExact) {
+          if (Math.abs(diff) > 4) { signal = '🔴 NO (exact miss)'; edgeVal = curPrice; }
+          if (Math.abs(diff) <= 1){ signal = '🟢 YES (exact hit)'; edgeVal = curPrice ? 1-curPrice : null; }
+        }
+      }
+
+      if (signal && edgeVal != null) {
+        // Only show if edge is meaningful (market mispriced)
+        const edgePct = edgeVal * 100;
+        // High confidence: edge > 5¢ meaning market is clearly wrong
+        if (edgePct > 5 || edgePct < -5) {
+          opps.push({
+            city: st.city, title, outcome, signal, edgeVal, edgePct,
+            actual, target, unit, curPrice, endDate, dayOffset,
+            forecastUsed: dayOffset > 0 ? `Forecast ▲${forecastMax?.toFixed(1)}°C` : `METAR ${obs.tempC}°C`
+          });
+        }
+      }
+    }
+  }
+
+  // Sort by edge descending
+  opps.sort((a,b) => Math.abs(b.edgePct) - Math.abs(a.edgePct));
+
+  document.getElementById('opp-count').textContent =
+    opps.length > 0 ? `${opps.length} found` : 'none right now';
+
+  const el = document.getElementById('opps-container');
+  if (!opps.length) {
+    el.innerHTML = '<div class="empty">No high-confidence mispricing detected. Markets look efficient right now.</div>';
+    return;
+  }
+
+  let html = '';
+  for (const o of opps) {
+    const edgePct = Math.abs(o.edgePct).toFixed(1);
+    const grade = o.edgePct > 20 ? 'high' : 'med';
+    const edgeGrade = o.edgePct > 20 ? 'high' : 'med';
+    const dayLabel = o.dayOffset === 0 ? 'Today' : o.dayOffset === 1 ? 'Tomorrow' : `+${o.dayOffset}d`;
+    const action = o.signal.includes('NO') ? 'Buy NO' : 'Buy YES';
+    const actionPrice = o.signal.includes('NO')
+      ? (o.curPrice != null ? ((1-o.curPrice)*100).toFixed(1)+'¢' : '—')
+      : (o.curPrice != null ? (o.curPrice*100).toFixed(1)+'¢' : '—');
+
+    html += `
+      <div class="opp-card ${grade}">
+        <div class="opp-left">
+          <div class="opp-title">${o.title}</div>
+          <div class="opp-meta">
+            ${o.signal} &nbsp;·&nbsp; ${dayLabel} (${o.endDate})<br>
+            Real: <b>${o.actual}${o.unit}</b> &nbsp;·&nbsp; Target: <b>${o.target}</b> &nbsp;·&nbsp; ${o.forecastUsed}<br>
+            Outcome: ${o.outcome} @ ${o.curPrice != null ? (o.curPrice*100).toFixed(1)+'¢' : '—'}
+          </div>
+        </div>
+        <div class="opp-right">
+          <div class="opp-edge ${edgeGrade}">${edgePct}¢</div>
+          <div class="opp-signal">edge</div>
+          <button class="opp-action" onclick="window.open('https://polymarket.com/markets?tag=weather','_blank')">${action} ${actionPrice}</button>
+        </div>
+      </div>`;
+  }
+  el.innerHTML = html;
+
+  // Update last refresh time
+  document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+}
+
+// ── AUTO REFRESH ───────────────────────────────────────
+async function fetchAll() {
+  await Promise.all([fetchMETAR(), fetchMarkets()]);
+  fetchForecasts(); // runs in background, slower
+}
+
+// Countdown timer
+let secondsLeft = 1800;
+function tick() {
+  secondsLeft--;
+  if (secondsLeft <= 0) { secondsLeft = 1800; fetchAll(); }
+  const m = Math.floor(secondsLeft/60).toString().padStart(2,'0');
+  const s = (secondsLeft%60).toString().padStart(2,'0');
+  document.getElementById('countdown').textContent = `${m}:${s}`;
+}
+setInterval(tick, 1000);
+
+// Init
+fetchAll();
+</script>
+</body>
+</html>

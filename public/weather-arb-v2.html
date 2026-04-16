@@ -174,10 +174,15 @@ let marketData = [];   // active temperature markets
 // ── METAR ──────────────────────────────────────────────
 async function fetchMETAR() {
   document.getElementById('metar-dot').classList.add('red');
-  const ids = STATIONS.map(s => s.id).join(',');
   try {
-    const res = await fetch(`${VERCEL}/api/metar?ids=${ids}&format=json`);
-    const data = await res.json();
+    const results = await Promise.all(
+      STATIONS.map(s =>
+        fetch(`${VERCEL}/api/metar?ids=${s.id}&format=json`)
+          .then(r => r.json())
+          .catch(() => [])
+      )
+    );
+    const data = results.flat();
     metarData = {};
     for (const obs of data) {
       const st = STATIONS.find(s => s.id === (obs.icaoId || obs.stationId));

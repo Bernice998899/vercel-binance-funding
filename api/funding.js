@@ -294,16 +294,18 @@ async function fetchAsterEquity(ex) {
 async function fetchBitgetEquity() {
   const w = emptyWallet();
   try {
-    const assets = await bitgetUtaRequest('GET', '/api/v3/account/assets');
-    console.log('🔍 bitget UTA assets:', JSON.stringify(assets));
+    const data = await bitgetUtaRequest('GET', '/api/v3/account/assets');
+    console.log('🔍 bitget UTA assets:', JSON.stringify(data));
 
+    // UTA 返回单个 object：整体权益在顶层 usdtEquity / accountEquity
+    w.futures.USDT = num(data?.usdtEquity || data?.accountEquity);
+
+    // assets[] 数组里若有 USDC 仓位，单独累加
+    const assets = data?.assets;
     if (Array.isArray(assets)) {
       for (const a of assets) {
-        if (a.coin === 'USDT') {
-          w.futures.USDT = num(a.equity || a.available);
-        }
         if (a.coin === 'USDC') {
-          w.futures.USDC = num(a.equity || a.available);
+          w.futures.USDC = num(a.usdValue || a.equity);
         }
       }
     }
@@ -385,10 +387,11 @@ async function processExchangePositions(name, exchange, nowMs, sinceMs) {
   let positions;
   try {
     if (name === 'bitget') {
-      // UTA：直接调用 /api/v3/position/all-position
-      const raw = await bitgetUtaRequest('GET', '/api/v3/position/all-position', { productType: 'USDT-FUTURES' });
+      // UTA：/api/v3/position/current-position（不传 symbol 返回该 category 下所有持仓）
+      const raw = await bitgetUtaRequest('GET', '/api/v3/position/current-position', { category: 'USDT-FUTURES' });
       console.log('🔍 bitget UTA positions:', JSON.stringify(raw));
-      positions = (raw || []).map((p) => ({
+      const list = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+      positions = list.map((p) => ({
         symbol: `${p.symbol}/USDT:USDT`,
         contracts: num(p.total || p.available),
         entryPrice: num(p.openPriceAvg || p.averageOpenPrice),

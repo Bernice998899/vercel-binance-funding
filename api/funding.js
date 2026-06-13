@@ -1,4 +1,5 @@
 const ccxt = require('ccxt');
+const crypto = require('crypto');
 
 const FUNDING_WINDOW_MS = 72.01 * 60 * 60 * 1000;
 const FUNDING_PAGE_LIMIT = 100;
@@ -40,6 +41,55 @@ const sumWallet = (w) => {
   return t;
 };
 
+// ---------- Bitget UTA (Unified Trading Account) 原生请求 ----------
+const BITGET_BASE_URL = 'https://api.bitget.com';
+
+function bitgetSign(timestamp, method, path, body, secret) {
+  const prehash = timestamp + method.toUpperCase() + path + body;
+  return crypto.createHmac('sha256', secret).update(prehash).digest('base64');
+}
+
+async function bitgetUtaRequest(method, path, params = {}) {
+  const apiKey = process.env.BITGET_API_KEY;
+  const secret = process.env.BITGET_API_SECRET;
+  const passphrase = process.env.BITGET_API_PASSPHRASE;
+
+  const timestamp = Date.now().toString();
+  let requestPath = path;
+  let body = '';
+
+  if (method === 'GET') {
+    const qs = new URLSearchParams(params).toString();
+    if (qs) requestPath = `${path}?${qs}`;
+  } else {
+    body = JSON.stringify(params);
+  }
+
+  const sign = bitgetSign(timestamp, method, requestPath, body, secret);
+
+  const headers = {
+    'ACCESS-KEY': apiKey,
+    'ACCESS-SIGN': sign,
+    'ACCESS-TIMESTAMP': timestamp,
+    'ACCESS-PASSPHRASE': passphrase,
+    'Content-Type': 'application/json',
+    'locale': 'en-US',
+  };
+
+  const url = `${BITGET_BASE_URL}${requestPath}`;
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: method === 'GET' ? undefined : body,
+  });
+
+  const json = await res.json();
+  if (json.code && json.code !== '00000') {
+    throw new Error(`Bitget UTA ${path}: ${json.code} ${json.msg}`);
+  }
+  return json.data;
+}
+
 function buildExchanges() {
   return {
     binance: new ccxt.binance({
@@ -78,10 +128,10 @@ function buildExchanges() {
       },
     }),
     bitget: new ccxt.bitget({
+      // ⚠️ 账户已切换为 Unified Trading Account (UTA)
+      // 余额/持仓走原生 /api/v3 (见 bitgetUtaRequest)，此实例仅用于 fetchTickers（公共数据，不受账户模式影响）
       apiKey: process.env.BITGET_API_KEY,
       secret: process.env.BITGET_API_SECRET,
-      // ⚠️ Bitget 强制要求第三个凭证：passphrase（创建 API key 时自己设的）
-      // CCXT 里字段名叫 password。Vercel 需新增 BITGET_API_PASSPHRASE
       password: process.env.BITGET_API_PASSPHRASE,
       enableRateLimit: true,
       options: { defaultType: 'swap' },
@@ -239,43 +289,27 @@ async function fetchAsterEquity(ex) {
   return w;
 }
 
-// Bitget V2 Mix：swap 余额 data[] 数组，每项 { marginCoin, accountEquity, usdtEquity, ... }
-// USDT-M 和 USDC-M 是不同 productType，分别查询
-async function fetchBitgetEquity(ex) {
+// Bitget UTA (Unified Trading Account)：单一账户聚合所有资产
+// /api/v3/account/assets 返回 [{ coin, available, frozen, equity, ... }, ...]
+async function fetchBitgetEquity() {
   const w = emptyWallet();
-  const [usdtSwap, usdcSwap, spotBal] = await Promise.all([
-    // 默认 productType = USDT-FUTURES
-    ex.fetchBalance({ type: 'swap' }).catch((e) => {
-      console.error('❌ bitget USDT swap balance:', e.message);
-      return {};
-    }),
-    // USDC 本位合约要显式传 productType
-    ex.fetchBalance({ type: 'swap', productType: 'USDC-FUTURES' }).catch(() => ({})),
-    ex.fetchBalance({ type: 'spot' }).catch(() => ({})),
-  ]);
+  try {
+    const assets = await bitgetUtaRequest('GET', '/api/v3/account/assets');
+    console.log('🔍 bitget UTA assets:', JSON.stringify(assets));
 
-  // 调试：首次部署确认结构（正常后可删）
-  console.log('🔍 bitget swap total:', JSON.stringify(usdtSwap?.total || {}));
-
-  // 原始 info.data[] 里 accountEquity 是该保证金币种的账户权益（含未实现盈亏）
-  const parseMixList = (bal, coin) => {
-    const list = bal?.info?.data;
-    if (Array.isArray(list)) {
-      const entry = list.find((d) => d.marginCoin === coin);
-      if (entry) return num(entry.accountEquity || entry.usdtEquity || entry.available);
+    if (Array.isArray(assets)) {
+      for (const a of assets) {
+        if (a.coin === 'USDT') {
+          w.futures.USDT = num(a.equity || a.available);
+        }
+        if (a.coin === 'USDC') {
+          w.futures.USDC = num(a.equity || a.available);
+        }
+      }
     }
-    return 0;
-  };
-
-  w.futures.USDT = parseMixList(usdtSwap, 'USDT');
-  w.futures.USDC = parseMixList(usdcSwap, 'USDC');
-
-  // fallback: CCXT 统一字段
-  if (!w.futures.USDT) w.futures.USDT = num(usdtSwap?.total?.USDT);
-  if (!w.futures.USDC) w.futures.USDC = num(usdcSwap?.total?.USDC);
-
-  w.spot.USDT = num(spotBal?.total?.USDT);
-  w.spot.USDC = num(spotBal?.total?.USDC);
+  } catch (e) {
+    console.error('❌ bitget UTA equity:', e.message);
+  }
 
   w.total = sumWallet(w);
   return w;
@@ -350,9 +384,22 @@ async function fetchFundingWindow(exchange, symbol, sinceMs, nowMs) {
 async function processExchangePositions(name, exchange, nowMs, sinceMs) {
   let positions;
   try {
-    positions = (name === 'phemex' || name === 'mexc')
-      ? await exchange.fetch_positions()
-      : await exchange.fetchPositions();
+    if (name === 'bitget') {
+      // UTA：直接调用 /api/v3/position/all-position
+      const raw = await bitgetUtaRequest('GET', '/api/v3/position/all-position', { productType: 'USDT-FUTURES' });
+      console.log('🔍 bitget UTA positions:', JSON.stringify(raw));
+      positions = (raw || []).map((p) => ({
+        symbol: `${p.symbol}/USDT:USDT`,
+        contracts: num(p.total || p.available),
+        entryPrice: num(p.openPriceAvg || p.averageOpenPrice),
+        side: (p.holdSide || '').toLowerCase(), // 'long' / 'short'
+        info: p,
+      }));
+    } else if (name === 'phemex' || name === 'mexc') {
+      positions = await exchange.fetch_positions();
+    } else {
+      positions = await exchange.fetchPositions();
+    }
   } catch (err) {
     console.error(`❌ ${name} positions:`, err.message);
     return [];
@@ -366,7 +413,10 @@ async function processExchangePositions(name, exchange, nowMs, sinceMs) {
   const signFlip = NEGATIVE_FUNDING_SIGN.has(name) ? -1 : 1;
 
   const rows = await Promise.all(open.map(async (pos) => {
-    const allFunding = await fetchFundingWindow(exchange, pos.symbol, sinceMs, nowMs);
+    // bitget UTA 暂不通过 ccxt fetchFundingHistory（classic mix endpoint，会触发 40085）
+    const allFunding = (name === 'bitget')
+      ? []
+      : await fetchFundingWindow(exchange, pos.symbol, sinceMs, nowMs);
     const totalFunding = allFunding.reduce((s, f) => s + num(f.amount), 0) * signFlip;
 
     let positionSize = pos.contracts;
@@ -444,6 +494,12 @@ function formatOrder(o, name, exchange) {
 
 async function processExchangeOrders(name, exchange, positionRows) {
   const results = [];
+
+  // bitget UTA：open orders 暂未接入原生 endpoint，先返回空，避免触发 classic mix 40085
+  if (name === 'bitget') {
+    return results;
+  }
+
   try {
     if (name === 'binance') {
       // Binance：条件单 (SL/TP) 需要额外用 stop:true 拉取

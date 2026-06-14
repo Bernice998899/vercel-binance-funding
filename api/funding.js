@@ -392,11 +392,19 @@ async function processExchangePositions(name, exchange, nowMs, sinceMs) {
       const raw = await bitgetUtaRequest('GET', '/api/v3/position/current-position', { category: 'USDT-FUTURES' });
       console.log('🔍 bitget UTA positions:', JSON.stringify(raw));
       const list = Array.isArray(raw?.list) ? raw.list : (Array.isArray(raw) ? raw : []);
+
+      // 调试：找出 CCXT Bitget markets 里正确的 symbol 格式
+      const sampleSymbols = list.map(p => p.symbol);
+      for (const s of sampleSymbols) {
+        const matches = Object.keys(exchange.markets).filter(k => k.toUpperCase().includes(s.toUpperCase().replace('USDT', '')));
+        console.log(`🔍 bitget market lookup [${s}]:`, matches.slice(0, 5));
+      }
+
       positions = list.map((p) => ({
         symbol: `${p.symbol}/USDT:USDT`,
-        contracts: num(p.total),                          // 持仓数量
-        entryPrice: num(p.avgPrice),                      // 开仓均价
-        side: (p.posSide || p.holdSide || '').toLowerCase(), // UTA 用 posSide，兼容 holdSide
+        contracts: num(p.total),
+        entryPrice: num(p.avgPrice),
+        side: (p.posSide || p.holdSide || '').toLowerCase(),
         info: p,
       }));
     } else if (name === 'phemex' || name === 'mexc') {

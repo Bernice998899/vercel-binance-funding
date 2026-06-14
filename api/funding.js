@@ -387,14 +387,15 @@ async function processExchangePositions(name, exchange, nowMs, sinceMs) {
   let positions;
   try {
     if (name === 'bitget') {
-      // UTA：/api/v3/position/current-position（不传 symbol 返回该 category 下所有持仓）
+      // UTA：/api/v3/position/current-position
+      // 实际返回结构: { list: [ { category, symbol, marginCoin, holdSide, total, avgPrice, positionBalance, ... } ] }
       const raw = await bitgetUtaRequest('GET', '/api/v3/position/current-position', { category: 'USDT-FUTURES' });
       console.log('🔍 bitget UTA positions:', JSON.stringify(raw));
-      const list = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+      const list = Array.isArray(raw?.list) ? raw.list : (Array.isArray(raw) ? raw : []);
       positions = list.map((p) => ({
         symbol: `${p.symbol}/USDT:USDT`,
-        contracts: num(p.total || p.available),
-        entryPrice: num(p.openPriceAvg || p.averageOpenPrice),
+        contracts: num(p.total),           // 持仓数量
+        entryPrice: num(p.avgPrice),       // 开仓均价
         side: (p.holdSide || '').toLowerCase(), // 'long' / 'short'
         info: p,
       }));

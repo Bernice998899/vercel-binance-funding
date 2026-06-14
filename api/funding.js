@@ -394,9 +394,9 @@ async function processExchangePositions(name, exchange, nowMs, sinceMs) {
       const list = Array.isArray(raw?.list) ? raw.list : (Array.isArray(raw) ? raw : []);
       positions = list.map((p) => ({
         symbol: `${p.symbol}/USDT:USDT`,
-        contracts: num(p.total),           // 持仓数量
-        entryPrice: num(p.avgPrice),       // 开仓均价
-        side: (p.holdSide || '').toLowerCase(), // 'long' / 'short'
+        contracts: num(p.total),                          // 持仓数量
+        entryPrice: num(p.avgPrice),                      // 开仓均价
+        side: (p.posSide || p.holdSide || '').toLowerCase(), // UTA 用 posSide，兼容 holdSide
         info: p,
       }));
     } else if (name === 'phemex' || name === 'mexc') {

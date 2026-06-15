@@ -1,4 +1,5 @@
 const ccxt = require('ccxt');
+const crypto = require('crypto');
 
 const FUNDING_WINDOW_MS = 120.01 * 60 * 60 * 1000; // 5 天
 const FUNDING_PAGE_LIMIT = 100;
@@ -26,13 +27,11 @@ const convertMexcOrderSide = (code) => {
 const num = (v) => parseFloat(v || 0) || 0;
 
 // 把 CCXT/网络错误归类成人能看懂的简短描述
-// 返回 { type, message } —— type 用于前端配色，message 是给人看的解释
 function classifyError(err, exchangeName) {
   const name = err?.constructor?.name || err?.name || '';
   const raw = String(err?.message || err || '').slice(0, 200);
   const ex = exchangeName ? exchangeName.toUpperCase() : 'Exchange';
 
-  // CCXT 的错误类名很有用，优先按类名判断
   if (/AuthenticationError|PermissionDenied/i.test(name) ||
       /api[\s_-]?key|signature|invalid.*key|unauthorized|permission|passphrase|apikey/i.test(raw)) {
     return { type: 'auth', message: `${ex} 认证失败 (API key 过期/无效/权限不足)` };
@@ -54,7 +53,6 @@ function classifyError(err, exchangeName) {
   if (/ExchangeError/i.test(name)) {
     return { type: 'exchange', message: `${ex} 交易所返回错误: ${raw}` };
   }
-  // 兜底：原始信息
   return { type: 'unknown', message: `${ex}: ${raw}` };
 }
 
@@ -72,6 +70,55 @@ const sumWallet = (w) => {
   }
   return t;
 };
+
+// ---------- Bitget UTA (Unified Trading Account) 原生请求 ----------
+const BITGET_BASE_URL = 'https://api.bitget.com';
+
+function bitgetSign(timestamp, method, path, body, secret) {
+  const prehash = timestamp + method.toUpperCase() + path + body;
+  return crypto.createHmac('sha256', secret).update(prehash).digest('base64');
+}
+
+async function bitgetUtaRequest(method, path, params = {}) {
+  const apiKey = process.env.BITGET_API_KEY;
+  const secret = process.env.BITGET_API_SECRET;
+  const passphrase = process.env.BITGET_API_PASSPHRASE;
+
+  const timestamp = Date.now().toString();
+  let requestPath = path;
+  let body = '';
+
+  if (method === 'GET') {
+    const qs = new URLSearchParams(params).toString();
+    if (qs) requestPath = `${path}?${qs}`;
+  } else {
+    body = JSON.stringify(params);
+  }
+
+  const sign = bitgetSign(timestamp, method, requestPath, body, secret);
+
+  const headers = {
+    'ACCESS-KEY': apiKey,
+    'ACCESS-SIGN': sign,
+    'ACCESS-TIMESTAMP': timestamp,
+    'ACCESS-PASSPHRASE': passphrase,
+    'Content-Type': 'application/json',
+    'locale': 'en-US',
+  };
+
+  const url = `${BITGET_BASE_URL}${requestPath}`;
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: method === 'GET' ? undefined : body,
+  });
+
+  const json = await res.json();
+  if (json.code && json.code !== '00000') {
+    throw new Error(`Bitget UTA ${path}: ${json.code} ${json.msg}`);
+  }
+  return json.data;
+}
 
 function buildExchanges() {
   return {
@@ -100,21 +147,18 @@ function buildExchanges() {
       options: { defaultType: 'swap' },
     }),
     aster: new ccxt.aster({
-      // ⚠️ Aster 是 DEX，CCXT v4.5.52+ 用 V3：要 L1 钱包私钥（0x + 64 hex = 66 字符）
-      // 兼容多个变量名：优先 ASTER_PRIVATE_KEY，其次你之前存的 ASTER_API_SECRET
       privateKey: process.env.ASTER_PRIVATE_KEY || process.env.ASTER_API_SECRET,
       enableRateLimit: true,
-      // ⚠️ CCXT aster 只支持 'swap' / 'spot'，不支持 'future'（传 future 会让 fetchBalance 崩）
       options: {
         defaultType: 'swap',
         warnOnFetchOpenOrdersWithoutSymbol: false,
       },
     }),
     bitget: new ccxt.bitget({
+      // ⚠️ 账户是 Unified Trading Account (UTA)
+      // 余额/持仓走原生 /api/v3 (bitgetUtaRequest)，此实例仅供 ticker 公共数据使用
       apiKey: process.env.BITGET_API_KEY,
       secret: process.env.BITGET_API_SECRET,
-      // ⚠️ Bitget 强制要求第三个凭证：passphrase（创建 API key 时自己设的）
-      // CCXT 里字段名叫 password。Vercel 需新增 BITGET_API_PASSPHRASE
       password: process.env.BITGET_API_PASSPHRASE,
       enableRateLimit: true,
       options: { defaultType: 'swap' },
@@ -232,9 +276,6 @@ async function fetchMexcEquity(ex) {
   return w;
 }
 
-// Aster V3 (DEX)：CCXT 只支持 type='swap'/'spot'，不支持 'future'
-// swap 余额响应是数组: [{ asset, balance, crossWalletBalance, availableBalance, ... }]
-// CCXT parseBalance 会把它转成统一格式，total = balance 字段
 async function fetchAsterEquity(ex) {
   const w = emptyWallet();
   const [swapBal, spotBal] = await Promise.all([
@@ -245,26 +286,21 @@ async function fetchAsterEquity(ex) {
     ex.fetchBalance({ type: 'spot' }).catch(() => ({})),
   ]);
 
-  // 调试：确认结构（正常后可删）
   console.log('🔍 aster swap total:', JSON.stringify(swapBal?.total || {}));
 
-  // 优先用原始 info 数组里的 balance / crossWalletBalance（更接近"权益"）
   const infoArr = Array.isArray(swapBal?.info) ? swapBal.info : null;
   if (infoArr) {
     for (const b of infoArr) {
-      // balance = 钱包余额, crossWalletBalance 通常等于或接近 balance
       const val = num(b.balance || b.crossWalletBalance || b.availableBalance);
       if (b.asset === 'USDT') w.futures.USDT = val;
       if (b.asset === 'USDC') w.futures.USDC = val;
     }
   }
-  // fallback: CCXT 统一字段 total
   if (!w.futures.USDT && !w.futures.USDC) {
     w.futures.USDT = num(swapBal?.total?.USDT);
     w.futures.USDC = num(swapBal?.total?.USDC);
   }
 
-  // spot 余额（V3 sapi）
   w.spot.USDT = num(spotBal?.total?.USDT);
   w.spot.USDC = num(spotBal?.total?.USDC);
 
@@ -272,43 +308,29 @@ async function fetchAsterEquity(ex) {
   return w;
 }
 
-// Bitget V2 Mix：swap 余额 data[] 数组，每项 { marginCoin, accountEquity, usdtEquity, ... }
-// USDT-M 和 USDC-M 是不同 productType，分别查询
-async function fetchBitgetEquity(ex) {
+// Bitget UTA：余额走 /api/v3/account/assets（单个 object，顶层 usdtEquity）
+async function fetchBitgetEquity() {
   const w = emptyWallet();
-  const [usdtSwap, usdcSwap, spotBal] = await Promise.all([
-    // 默认 productType = USDT-FUTURES
-    ex.fetchBalance({ type: 'swap' }).catch((e) => {
-      console.error('❌ bitget USDT swap balance:', e.message);
-      return {};
-    }),
-    // USDC 本位合约要显式传 productType
-    ex.fetchBalance({ type: 'swap', productType: 'USDC-FUTURES' }).catch(() => ({})),
-    ex.fetchBalance({ type: 'spot' }).catch(() => ({})),
-  ]);
+  try {
+    const data = await bitgetUtaRequest('GET', '/api/v3/account/assets');
+    console.log('🔍 bitget UTA assets:', JSON.stringify(data));
 
-  // 调试：首次部署确认结构（正常后可删）
-  console.log('🔍 bitget swap total:', JSON.stringify(usdtSwap?.total || {}));
+    // 顶层 usdtEquity = 整个 UTA 账户折合 USDT 权益
+    w.futures.USDT = num(data?.usdtEquity || data?.accountEquity);
 
-  // 原始 info.data[] 里 accountEquity 是该保证金币种的账户权益（含未实现盈亏）
-  const parseMixList = (bal, coin) => {
-    const list = bal?.info?.data;
-    if (Array.isArray(list)) {
-      const entry = list.find((d) => d.marginCoin === coin);
-      if (entry) return num(entry.accountEquity || entry.usdtEquity || entry.available);
+    // assets[] 里若有 USDC 单独累加
+    const assets = data?.assets;
+    if (Array.isArray(assets)) {
+      for (const a of assets) {
+        if (a.coin === 'USDC') {
+          w.futures.USDC = num(a.usdValue || a.equity);
+        }
+      }
     }
-    return 0;
-  };
-
-  w.futures.USDT = parseMixList(usdtSwap, 'USDT');
-  w.futures.USDC = parseMixList(usdcSwap, 'USDC');
-
-  // fallback: CCXT 统一字段
-  if (!w.futures.USDT) w.futures.USDT = num(usdtSwap?.total?.USDT);
-  if (!w.futures.USDC) w.futures.USDC = num(usdcSwap?.total?.USDC);
-
-  w.spot.USDT = num(spotBal?.total?.USDT);
-  w.spot.USDC = num(spotBal?.total?.USDC);
+  } catch (e) {
+    console.error('❌ bitget UTA equity:', e.message);
+    throw e; // 让上层 classifyError 处理
+  }
 
   w.total = sumWallet(w);
   return w;
@@ -383,12 +405,35 @@ async function fetchFundingWindow(exchange, symbol, sinceMs, nowMs) {
 async function processExchangePositions(name, exchange, nowMs, sinceMs) {
   let positions;
   try {
-    positions = (name === 'phemex' || name === 'mexc')
-      ? await exchange.fetch_positions()
-      : await exchange.fetchPositions();
+    if (name === 'bitget') {
+      // UTA：/api/v3/position/current-position，category=USDT-FUTURES
+      const raw = await bitgetUtaRequest('GET', '/api/v3/position/current-position', { category: 'USDT-FUTURES' });
+      console.log('🔍 bitget UTA positions:', JSON.stringify(raw));
+      const list = Array.isArray(raw?.list) ? raw.list : (Array.isArray(raw) ? raw : []);
+
+      // 调试：确认 CCXT markets 里对应的 symbol 格式（正常后可删）
+      for (const p of list) {
+        const matches = Object.keys(exchange.markets || {}).filter(k =>
+          k.toUpperCase().includes(p.symbol.toUpperCase().replace('USDT', ''))
+        );
+        console.log(`🔍 bitget market lookup [${p.symbol}]:`, matches.slice(0, 5));
+      }
+
+      positions = list.map((p) => ({
+        symbol: `${p.symbol}/USDT:USDT`,
+        contracts: num(p.total),
+        entryPrice: num(p.avgPrice),
+        side: (p.posSide || p.holdSide || '').toLowerCase(), // UTA 用 posSide
+        info: p,
+      }));
+    } else if (name === 'phemex' || name === 'mexc') {
+      positions = await exchange.fetch_positions();
+    } else {
+      positions = await exchange.fetchPositions();
+    }
   } catch (err) {
     console.error(`❌ ${name} positions:`, err.message);
-    throw err; // 抛给上层，由主流程归类成友好错误信息
+    throw err; // 抛给上层 classifyError
   }
 
   const open = positions.filter((p) => p.contracts && p.contracts > 0);
@@ -399,7 +444,10 @@ async function processExchangePositions(name, exchange, nowMs, sinceMs) {
   const signFlip = NEGATIVE_FUNDING_SIGN.has(name) ? -1 : 1;
 
   const rows = await Promise.all(open.map(async (pos) => {
-    const allFunding = await fetchFundingWindow(exchange, pos.symbol, sinceMs, nowMs);
+    // bitget UTA 暂不查 funding history（classic mix endpoint 会触发 40085）
+    const allFunding = (name === 'bitget')
+      ? []
+      : await fetchFundingWindow(exchange, pos.symbol, sinceMs, nowMs);
     const totalFunding = allFunding.reduce((s, f) => s + num(f.amount), 0) * signFlip;
 
     let positionSize = pos.contracts;
@@ -424,9 +472,7 @@ async function processExchangePositions(name, exchange, nowMs, sinceMs) {
       unrealizedPnl,
       count: allFunding.length,
       totalFunding,
-      // 纯金额数组（向后兼容现有显示）
       fundingRecords: allFunding.map((f) => num(f.amount) * signFlip),
-      // 带时间戳的明细（供前端按 8h/16h/1d/3d/5d 窗口筛选重算）
       fundingDetail: allFunding.map((f) => ({
         ts: f.timestamp,
         amount: num(f.amount) * signFlip,
@@ -459,8 +505,6 @@ function formatOrder(o, name, exchange) {
     ? (limitPrice || triggerPrice)
     : (triggerPrice || limitPrice);
 
-  // MEXC 合约 amount 是张数 (contracts)；需要 × contractSize 转成币数
-  // 保持和 position.positionSize 的换算一致（见 processExchangePositions）
   let amount = num(o.amount || o.info?.origQty || o.info?.quantity || 0);
   if (name === 'mexc' && exchange && o.symbol) {
     const market = exchange.markets?.[o.symbol];
@@ -485,9 +529,14 @@ function formatOrder(o, name, exchange) {
 
 async function processExchangeOrders(name, exchange, positionRows) {
   const results = [];
+
+  // bitget UTA：open orders 暂未接入原生 endpoint，返回空避免触发 classic 40085
+  if (name === 'bitget') {
+    return results;
+  }
+
   try {
     if (name === 'binance') {
-      // Binance：条件单 (SL/TP) 需要额外用 stop:true 拉取
       const posSymbols = [...new Set(
         positionRows.filter((p) => p.source === name)
           .map((p) => p.rawSymbol || `${p.symbol}/USDT:USDT`)
@@ -502,7 +551,6 @@ async function processExchangeOrders(name, exchange, positionRows) {
       }));
       results.push(...perSymbol.flat().map((o) => formatOrder(o, name, exchange)));
     } else if (name === 'phemex' || name === 'aster') {
-      // Phemex / Aster(V3)：逐 symbol 查询；V3 OpenOrders 已含 TP/SL，不需 stop:true
       const posSymbols = [...new Set(
         positionRows.filter((p) => p.source === name)
           .map((p) => p.rawSymbol || `${p.symbol}/USDT:USDT`)
@@ -519,7 +567,6 @@ async function processExchangeOrders(name, exchange, positionRows) {
     console.error(`❌ ${name} orders:`, err.message);
   }
 
-  // 过滤无效订单（价格和数量都为 0 → 已成交或无效记录）
   return results.filter((o) => (o.price > 0 || o.triggerPrice > 0) && o.amount > 0);
 }
 
@@ -533,10 +580,7 @@ function dedupeOrders(orders) {
   });
 }
 
-// ---------- 对冲健康度（3 类） ----------
-// Class A: 无 TP/SL 挂单保护
-// Class B: 资费 funding 亏损
-// Class C: 多空 size 或 orders 数量不对齐（不含无 TP/SL 的重复警告）
+// ---------- 对冲健康度 ----------
 function analyzeHedges(result) {
   const bySymbol = {};
   for (const r of result) {
@@ -545,9 +589,9 @@ function analyzeHedges(result) {
     else if (r.side === 'short') bySymbol[r.symbol].short.push(r);
   }
 
-  const noProtection = []; // Class A
-  const fundingLoss = []; // Class B
-  const misaligned = [];  // Class C
+  const noProtection = [];
+  const fundingLoss = [];
+  const misaligned = [];
 
   for (const [symbol, sides] of Object.entries(bySymbol)) {
     const longSize = sides.long.reduce((s, r) => s + Math.abs(r.positionSize), 0);
@@ -562,7 +606,6 @@ function analyzeHedges(result) {
     const allEntries = [...sides.long, ...sides.short];
     const hasAnyOrder = allEntries.some((r) => r.tpSlClose?.length);
 
-    // Class A: 无 TP/SL 挂单保护
     if (!hasAnyOrder && allEntries.length > 0) {
       noProtection.push({
         symbol, longSize, shortSize, netFunding,
@@ -570,7 +613,6 @@ function analyzeHedges(result) {
       });
     }
 
-    // Class B: funding 亏损
     if (netFunding < -0.5) {
       fundingLoss.push({
         symbol, longSize, shortSize, netFunding,
@@ -579,37 +621,27 @@ function analyzeHedges(result) {
       });
     }
 
-    // Class C: size 或 order 不对齐
-    // 注意：不再限制"仅当有 TP/SL 保护时才检查"
-    // ETH 这种无 TP/SL + Size 不对齐应同时在两个分类里显示
     {
       const hasPair = sides.long.length && sides.short.length;
       const problems = [];
 
-      // 裸露敞口（单边）
       if (!hasPair && allEntries.length > 0) {
         if (sides.long.length) problems.push(`裸多单，无对冲空头`);
         else problems.push(`裸空单，无对冲多头`);
       }
 
       if (hasPair) {
-        // Size 对齐检查：任何绝对差 > 浮点容差都报出来
         const absDiff = Math.abs(longSize - shortSize);
         const sizeDiffPct = absDiff / Math.max(longSize, shortSize, 1);
         if (absDiff > 1e-8) {
           const dp = (longSize < 1 || shortSize < 1) ? 4 : (longSize < 100 ? 2 : 0);
           const lFmt = longSize.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
           const sFmt = shortSize.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
-          problems.push(
-            `Size 不对齐: L=${lFmt} vs S=${sFmt} (Δ${(sizeDiffPct * 100).toFixed(3)}%)`
-          );
+          problems.push(`Size 不对齐: L=${lFmt} vs S=${sFmt} (Δ${(sizeDiffPct * 100).toFixed(3)}%)`);
         }
 
-        // Order 数量对齐检查：只在至少有一边挂单时检查（双方都没挂单不算 "数量不一致"）
         if (hasAnyOrder && longOrderCount !== shortOrderCount) {
-          problems.push(
-            `Order 数量不对齐: long=${longOrderCount} 单 vs short=${shortOrderCount} 单`
-          );
+          problems.push(`Order 数量不对齐: long=${longOrderCount} 单 vs short=${shortOrderCount} 单`);
         }
       }
 
@@ -623,7 +655,6 @@ function analyzeHedges(result) {
     }
   }
 
-  // 排序：funding 亏损按绝对值大排前，misaligned 按 size 差异大排前
   fundingLoss.sort((a, b) => a.netFunding - b.netFunding);
   misaligned.sort((a, b) => {
     const aDiff = Math.abs(a.longSize - a.shortSize) / Math.max(a.longSize, a.shortSize, 1);
@@ -644,11 +675,9 @@ module.exports = async (req, res) => {
   const exchangeList = Object.entries(exchanges);
 
   try {
-    // 每个交易所独立处理：任一失败只 skip 它自己，记录错误，不影响其他
-    const exchangeStatus = {}; // { name: { ok, error, errorType } }
+    const exchangeStatus = {};
 
     const perExchangePromises = exchangeList.map(async ([name, exchange]) => {
-      // Step 1: loadMarkets —— 失败则整个交易所 skip（后续都依赖 markets）
       try {
         await exchange.loadMarkets();
       } catch (err) {
@@ -658,7 +687,6 @@ module.exports = async (req, res) => {
         return { name, equity: emptyWallet(), positions: [], failed: true };
       }
 
-      // Step 2: balance + positions 各自独立容错
       let equityErr = null;
       let posErr = null;
 
@@ -675,7 +703,6 @@ module.exports = async (req, res) => {
         }),
       ]);
 
-      // 记录状态：balance 或 positions 任一出错就标记（balance 更关键，优先报它）
       const firstErr = equityErr || posErr;
       if (firstErr) {
         const { type, message } = classifyError(firstErr, name);
@@ -704,12 +731,7 @@ module.exports = async (req, res) => {
       equityOverview.phemex.unrealizedPnl = phemexUnrealized;
     }
 
-    // Orders —— 每个交易所独立容错，失败不影响其他
     const orderPromises = exchangeList.map(async ([name, exchange]) => {
-      // loadMarkets 已失败的交易所直接跳过订单查询
-      if (exchangeStatus[name] && !exchangeStatus[name].ok && exchangeStatus[name].errorType) {
-        // 已经有错误记录，但 orders 失败不覆盖更重要的 balance 错误
-      }
       try {
         return await processExchangeOrders(name, exchange, result);
       } catch (err) {
@@ -740,14 +762,12 @@ module.exports = async (req, res) => {
       if (related?.length) pos.tpSlClose = related;
     }
 
-    // 健康分析放在 orders 挂完之后，才能拿到 order count
     const hedgeHealth = analyzeHedges(result);
 
     const totalEquity = Object.values(equityOverview).reduce(
       (s, ex) => s + (ex.total || 0), 0
     );
 
-    // 汇总失败的交易所列表（给前端显示）
     const failedExchanges = Object.entries(exchangeStatus)
       .filter(([, s]) => !s.ok)
       .map(([name, s]) => ({ name, error: s.error, errorType: s.errorType }));
@@ -765,14 +785,13 @@ module.exports = async (req, res) => {
       equityOverview,
       totalEquity,
       hedgeHealth,
-      exchangeStatus,      // 每个交易所 { ok, error, errorType }
-      failedExchanges,     // 仅失败的，方便前端直接显示
-      serverNow: nowMs,    // 服务器抓取时刻，前端按此算时间窗口
-      windowMs: FUNDING_WINDOW_MS, // 数据覆盖的最大窗口 (5天)
+      exchangeStatus,
+      failedExchanges,
+      serverNow: nowMs,
+      windowMs: FUNDING_WINDOW_MS,
       elapsedMs: elapsed,
     });
   } catch (e) {
-    // 这里只会捕获非交易所级的意外错误（如代码 bug）
     console.error('❌ Fatal Error:', e);
     res.status(500).json({ success: false, error: classifyError(e).message, raw: e.message });
   }

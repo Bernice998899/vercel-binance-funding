@@ -411,16 +411,21 @@ async function processExchangePositions(name, exchange, nowMs, sinceMs) {
       console.log('🔍 bitget UTA positions:', JSON.stringify(raw));
       const list = Array.isArray(raw?.list) ? raw.list : (Array.isArray(raw) ? raw : []);
 
-      // 调试：确认 CCXT markets 里对应的 symbol 格式（正常后可删）
-      for (const p of list) {
-        const matches = Object.keys(exchange.markets || {}).filter(k =>
-          k.toUpperCase().includes(p.symbol.toUpperCase().replace('USDT', ''))
+      // 把 Bitget UTA 返回的 "LYNUSDT" 转成 CCXT markets 里正确的 key（如 "LYN/USDT:USDT"）
+      const resolveBitgetSymbol = (rawSym) => {
+        const direct = `${rawSym}/USDT:USDT`;
+        if (exchange.markets?.[direct]) return direct;
+        // 去掉 USDT 后缀，找永续合约 key（如 LYNUSDT -> LYN/USDT:USDT）
+        const base = rawSym.toUpperCase().replace(/USDT$/, '');
+        const candidates = Object.keys(exchange.markets || {}).filter(k =>
+          k.toUpperCase().startsWith(base + '/') && k.includes(':USDT')
         );
-        console.log(`🔍 bitget market lookup [${p.symbol}]:`, matches.slice(0, 5));
-      }
+        if (candidates.length) return candidates[0];
+        return direct; // fallback
+      };
 
       positions = list.map((p) => ({
-        symbol: `${p.symbol}/USDT:USDT`,
+        symbol: resolveBitgetSymbol(p.symbol),
         contracts: num(p.total),
         entryPrice: num(p.avgPrice),
         side: (p.posSide || p.holdSide || '').toLowerCase(), // UTA 用 posSide

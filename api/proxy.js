@@ -16,6 +16,7 @@ const ALLOW = [
   'api.bitget.com',
   'api.gateio.ws',
   'api.phemex.com',
+  'cdn.jsdelivr.net',
 ];
 
 export default async function handler(req, res) {

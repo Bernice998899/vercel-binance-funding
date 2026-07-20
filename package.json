@@ -2,9 +2,6 @@
   "name": "vercel-binance-funding",
   "version": "1.0.0",
   "dependencies": {
-    "ccxt": "4.5.8"
-  },
-  "overrides": {
-    "@noble/curves": "1.9.2"
+    "ccxt": "4.5.58"
   }
 }

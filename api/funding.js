@@ -1,4 +1,5 @@
 const ccxt = require('ccxt');
+console.log('🔎 CCXT VERSION:', ccxt.version, '| has aster?', typeof ccxt.aster);
 const crypto = require('crypto');
 
 const FUNDING_WINDOW_MS = 120.01 * 60 * 60 * 1000; // 5 天

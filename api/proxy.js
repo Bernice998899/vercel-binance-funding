@@ -11,6 +11,7 @@
 
 const ALLOW = [
   'fapi.binance.com',
+  'www.binance.com',
   'fapi.asterdex.com',
   'api.bybit.com',
   'api.bitget.com',

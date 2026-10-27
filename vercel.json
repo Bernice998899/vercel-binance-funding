@@ -1,7 +1,8 @@
-{
-  "version": 2,
-  "routes": [
-    { "src": "/api/funding", "dest": "/api/funding.js" },
-    { "src": "/", "dest": "/index.html" }
-  ]
-}
+   {
+     "version": 2,
+     "regions": ["sin1"],
+     "routes": [
+       { "src": "/api/funding", "dest": "/api/funding.js" },
+       { "src": "/", "dest": "/index.html" }
+     ]
+   }
